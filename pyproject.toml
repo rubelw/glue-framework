@@ -1,0 +1,8 @@
+# pyproject.toml
+[tool.pytest.ini_options]
+addopts = "-q"
+python_files = "test_*.py"
+testpaths = ["tests/unit"]
+filterwarnings = [
+  "ignore::DeprecationWarning:pyspark.*",
+]

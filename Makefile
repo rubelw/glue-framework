@@ -60,3 +60,26 @@ seed-dev-data:
 	@mkdir -p data/customers/dev
 	@printf "customer_id,email,ingest_dt\n1,Alice@example.com,2025-11-01\n2,bob@Example.com,2025-11-01\n2,bob@Example.com,2025-11-01\n3,Carla@EXAMPLE.COM,2025-11-02\n" > data/customers/dev/customers_part1.csv
 	@echo "[OK] Wrote data/customers/dev/customers_part1.csv"
+
+.PHONY: test-fast
+test-fast: ensure_docker
+	docker run --rm -it \
+	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
+	  -v $$(PWD):/ws \
+	  -w /ws \
+	  -e AWS_PROFILE="$(AWS_PROFILE)" \
+	  --entrypoint /bin/bash \
+	  $(GLUE_IMAGE) \
+	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -q tests/unit/test_transform.py'
+
+.PHONY: test
+test: ensure_docker
+	@echo "[INFO] Running unit tests in Glue 5.0 container"
+	docker run --rm -it \
+	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
+	  -v $$(PWD):/ws \
+	  -w /ws \
+	  -e AWS_PROFILE="$(AWS_PROFILE)" \
+	  --entrypoint /bin/bash \
+	  $(GLUE_IMAGE) \
+	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -q'
