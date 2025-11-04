@@ -1,0 +1,5 @@
+customer_id,email,ingest_dt
+1,Alice@example.com,2025-11-01
+2,bob@Example.com,2025-11-01
+2,bob@Example.com,2025-11-01
+3,Carla@EXAMPLE.COM,2025-11-02

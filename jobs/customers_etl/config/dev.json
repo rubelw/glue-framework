@@ -1,0 +1,12 @@
+{
+  "dev": {
+    "source_path": "file:///ws/data/customers/dev/*.csv",
+    "target_path": "file:///ws/out/customers/dev/",
+    "repartition": 4
+  },
+  "prod": {
+    "source_path": "file:///ws/data/customers/prod/*.csv",
+    "target_path": "file:///ws/out/customers/prod/",
+    "repartition": 16
+  }
+}

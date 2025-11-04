@@ -1,0 +1,40 @@
+services:
+  glue:
+    image: public.ecr.aws/glue/aws-glue-libs:5
+    container_name: glue50
+    # Mount your AWS creds (read-only) and the workspace
+    volumes:
+      - ~/.aws:/home/hadoop/.aws:ro
+      - ./:/ws
+    working_dir: /ws
+    environment:
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - PYSPARK_PYTHON=python3.11
+      - PYSPARK_DRIVER_PYTHON=python3.11
+      # Tweak Spark defaults per container if desired:
+      - SPARK_LOCAL_IP=127.0.0.1
+    # Expose Spark UIs
+    ports:
+      - "4040:4040"     # Spark UI (per active app)
+      - "18080:18080"   # History server (if you enable it)
+    entrypoint: ["/bin/bash", "-lc"]
+    command: "bash"
+
+  # Optional: a second service lets you run multiple jobs *without* port conflicts
+  glue2:
+    image: public.ecr.aws/glue/aws-glue-libs:5
+    container_name: glue50b
+    volumes:
+      - ~/.aws:/home/hadoop/.aws:ro
+      - ./:/ws
+    working_dir: /ws
+    environment:
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - PYSPARK_PYTHON=python3.11
+      - PYSPARK_DRIVER_PYTHON=python3.11
+      - SPARK_LOCAL_IP=127.0.0.1
+    ports:
+      - "4041:4040"
+      - "18081:18080"
+    entrypoint: ["/bin/bash", "-lc"]
+    command: "bash"
