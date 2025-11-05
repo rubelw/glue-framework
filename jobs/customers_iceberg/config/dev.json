@@ -1,0 +1,16 @@
+{
+  "dev": {
+    "source_paths": { "primary": "file:///ws/data/customers/dev/*.csv" },
+    "target_path": "file:///ws/out/customers_iceberg/dev/",
+    "repartition": 2,
+    "partition_col": "ingest_dt",
+    "join_key": "customer_id",
+    "sink": {
+      "format": "iceberg",
+      "catalog": "local",
+      "namespace": "default",
+      "table": "customers_iceberg"
+    }
+  }
+}
+

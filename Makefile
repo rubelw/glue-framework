@@ -2,54 +2,28 @@
 SHELL := /bin/bash
 
 # ---- Configurable knobs ----
-AWS_PROFILE ?= default
-JOB ?= customers_etl
-ENV ?= dev
-GLUE_IMAGE ?= public.ecr.aws/glue/aws-glue-libs:5
+AWS_PROFILE   ?= default
+JOB           ?= customers_etl
+ENV           ?= dev
 SPARK_UI_PORT ?= 4040
-HISTORY_PORT ?= 18080
+HISTORY_PORT  ?= 18080
+DOCKER_IMAGE  ?= public.ecr.aws/glue/aws-glue-libs:5
+
+# Optional: pass extra Spark conf from CLI like:
+#   make run JOB=foo ENV=dev EXTRA_CONF='--conf x=y'
+EXTRA_CONF    ?=
 
 # Use bash and sane flags
-SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 # Where optional seed templates live (override if you want)
 SEED_TEMPLATES ?= seeds
 
-
-# ---- Internal: the exact docker run you asked for (parameterized) ----
-RUN_CMD = docker run --rm -it \
-  -v $$HOME/.aws:/home/hadoop/.aws:ro \
-  -v $$(PWD):/ws \
-  -w /ws \
-  -e AWS_PROFILE="$(AWS_PROFILE)" \
-  -e PYTHONPATH="/ws" \
-  -p $(SPARK_UI_PORT):4040 -p $(HISTORY_PORT):18080 \
-  --entrypoint /bin/bash \
-  $(GLUE_IMAGE) \
-  -lc 'spark-submit \
-        --conf spark.sql.adaptive.enabled=true \
-        --conf spark.sql.shuffle.partitions=64 \
-        /ws/jobs/$(JOB)/main.py \
-        --ENV=$(ENV) \
-        --CONFIG_S3_URI=file:///ws/jobs/$(JOB)/config/$(ENV).json \
-        --BOOKMARKED=false'
-
-.PHONY: run run-customers-dev seed-dev seed-%-dev ensure_docker pull
-
-# Run the job (defaults: JOB=customers_etl, ENV=dev)
-run: ensure_docker
-	@echo "[INFO] Running job='$(JOB)' env='$(ENV)'"
-	@$(RUN_CMD)
-
-# Convenience alias to run exactly your customers_etl dev command
-run-customers-dev: JOB = customers_etl
-run-customers-dev: ENV = dev
-run-customers-dev: run
+.PHONY: run run-customers-dev seed-dev seed-%-dev ensure_docker pull clean-out test-fast test
 
 # Pull the Glue image (optional but nice the first time)
 pull:
-	docker pull $(GLUE_IMAGE)
+	docker pull $(DOCKER_IMAGE)
 
 # Ensure Docker Desktop/daemon is up before running
 ensure_docker:
@@ -63,6 +37,63 @@ ensure_docker:
 		done; \
 		docker info >/dev/null 2>&1 || (echo "[ERROR] Docker daemon still not ready." && exit 1) \
 	)
+
+# ---------------------------------------
+# Run the job (auto Iceberg HadoopCatalog)
+# ---------------------------------------
+run: ensure_docker
+	@echo "[INFO] Running job='$(JOB)' env='$(ENV)'"
+	@cfg="jobs/$(JOB)/config/$(ENV).json"; \
+	  if [ ! -f "$$cfg" ]; then \
+	    echo "[ERROR] Missing config: $$cfg"; exit 1; \
+	  fi; \
+	  if ! command -v python3 >/dev/null 2>&1; then \
+	    echo "[ERROR] python3 is required on the host to parse config JSON."; exit 1; \
+	  fi; \
+	  fmt=$$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=sys.argv[2]; print(d.get(e,{}).get("sink",{}).get("format","parquet"))' "$$cfg" "$(ENV)"); \
+	  catalog=$$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=sys.argv[2]; print(d.get(e,{}).get("sink",{}).get("catalog",""))' "$$cfg" "$(ENV)"); \
+	  ec_extra="$(EXTRA_CONF)"; \
+	  if [ "$$fmt" = "iceberg" ]; then \
+	    if [ "$$catalog" = "local" ] || [ "$$catalog" = "hadoop" ] || [ -z "$$catalog" ]; then \
+	      echo "[INFO] Detected Iceberg job with HadoopCatalog (local). Injecting Spark Iceberg conf..."; \
+	      mkdir -p warehouse; \
+	      ec_extra="$$ec_extra \
+	        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+	        --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
+	        --conf spark.sql.catalog.local.type=hadoop \
+	        --conf spark.sql.catalog.local.warehouse=file:///ws/warehouse"; \
+	    else \
+	      echo "[INFO] Iceberg detected with non-local catalog '$$catalog' — leaving conf to your environment (use EXTRA_CONF if needed)."; \
+	    fi; \
+	  fi; \
+	  cmd="spark-submit \
+	        $$ec_extra \
+	        --conf spark.sql.adaptive.enabled=true \
+	        --conf spark.sql.shuffle.partitions=64 \
+	        /ws/jobs/$(JOB)/main.py \
+	        --ENV=$(ENV) \
+	        --CONFIG_S3_URI=file:///ws/jobs/$(JOB)/config/$(ENV).json \
+	        --BOOKMARKED=false"; \
+	  echo "[INFO] spark-submit command:"; echo "$$cmd"; echo ""; \
+	  docker run --rm -it \
+	    -v $$HOME/.aws:/home/hadoop/.aws:ro \
+	    -v $$(PWD):/ws \
+	    -w /ws \
+	    -e AWS_PROFILE="$(AWS_PROFILE)" \
+	    -e PYTHONPATH="/ws" \
+	    -p $(SPARK_UI_PORT):4040 -p $(HISTORY_PORT):18080 \
+	    --entrypoint /bin/bash \
+	    $(DOCKER_IMAGE) \
+	    -lc "$$cmd"
+
+# Convenience alias to run exactly your customers_etl dev command
+run-customers-dev: JOB = customers_etl
+run-customers-dev: ENV = dev
+run-customers-dev: run
+
+# -----------------
+# Seeding utilities
+# -----------------
 
 # Seed a single dataset's dev folder.
 # Usage: make seed-orders-dev   or   make seed-customers-dev
@@ -98,7 +129,9 @@ clean-out:
 	@rm -rf out/* || true
 	@echo "[OK] Cleared ./out"
 
-.PHONY: test-fast
+# -----------
+# Test targets
+# -----------
 test-fast: ensure_docker
 	docker run --rm -it \
 	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
@@ -106,10 +139,9 @@ test-fast: ensure_docker
 	  -w /ws \
 	  -e AWS_PROFILE="$(AWS_PROFILE)" \
 	  --entrypoint /bin/bash \
-	  $(GLUE_IMAGE) \
+	  $(DOCKER_IMAGE) \
 	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -q tests/unit/test_transform.py'
 
-.PHONY: test
 test: ensure_docker
 	@echo "[INFO] Running unit tests in Glue 5.0 container"
 	docker run --rm -it \
@@ -118,5 +150,5 @@ test: ensure_docker
 	  -w /ws \
 	  -e AWS_PROFILE="$(AWS_PROFILE)" \
 	  --entrypoint /bin/bash \
-	  $(GLUE_IMAGE) \
+	  $(DOCKER_IMAGE) \
 	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -vv -ra --durations=10 --junitxml=out/test-results.xml'

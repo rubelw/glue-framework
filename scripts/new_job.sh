@@ -50,6 +50,20 @@ if [[ -z "$DATASET" && -z "$TWO_SOURCE" ]]; then
   DATASET="example"
 fi
 
+# ------------------------------
+# Prompt: Is this an Iceberg job?
+# ------------------------------
+read -rp "Is this an Iceberg job? (y/N): " ICEBERG_CHOICE
+ICEBERG_CHOICE=$(echo "$ICEBERG_CHOICE" | tr '[:upper:]' '[:lower:]')
+
+if [[ "$ICEBERG_CHOICE" == "y" || "$ICEBERG_CHOICE" == "yes" ]]; then
+  IS_ICEBERG=1
+  echo "[INFO] This job will be scaffolded as an Iceberg job."
+else
+  IS_ICEBERG=0
+  echo "[INFO] Creating a standard Glue (non-Iceberg) job."
+fi
+
 mkdir -p "$ROOT/jobs/$JOB_NAME/config"
 touch "$ROOT/jobs/__init__.py" "$ROOT/jobs/$JOB_NAME/__init__.py" "$ROOT/lib/__init__.py"
 
@@ -66,7 +80,87 @@ PY
 # MAIN.PY TEMPLATE (single-source)
 # ------------------------------
 emit_single_source_main() {
-  cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
+  if (( IS_ICEBERG == 1 )); then
+cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
+import sys
+from pyspark.sql import SparkSession, functions as F
+
+from lib.args import parse_args
+from lib.config import load_config
+from lib.fs import must_exist_glob, ensure_dir
+from lib.io import read_csv, write_parquet
+from lib.dq import require_columns, normalize_lower, dedupe_by_keys
+from lib.logging import emit_run_stats
+
+# ---- args & spark ----
+args = parse_args(sys.argv)
+spark = SparkSession.builder.getOrCreate()
+
+# ---- config ----
+cfg_all = load_config(args["CONFIG_S3_URI"], spark=spark)
+env = args["ENV"]
+cfg = cfg_all[env]
+
+# Config-driven settings
+source_paths = cfg.get("source_paths", {})  # {"primary": "..."}
+target_path  = cfg["target_path"]
+repartition  = int(cfg.get("repartition", 8))
+partition_by = cfg.get("partition_col", "INGEST_DT_PLACEHOLDER")
+join_key     = cfg.get("join_key", "JOIN_KEY_PLACEHOLDER")
+
+# Sink controls the write path: parquet (default) or iceberg
+sink = cfg.get("sink", {"format": "parquet"})
+
+# Local guards (no-op for s3a://)
+for label, path in source_paths.items():
+    must_exist_glob(path, label=f"source:{label}", if_scheme="file")
+ensure_dir(target_path, scheme="file")
+
+# Read primary source
+primary_path = source_paths.get("primary")
+df = read_csv(spark, primary_path)
+
+# Required columns
+req_cols = []
+if partition_by: req_cols.append(partition_by)
+if join_key:     req_cols.append(join_key)
+require_columns(df, req_cols)
+
+# Typical cleaning
+if "email" in df.columns:
+    df = normalize_lower(df, "email")
+if join_key and join_key in df.columns:
+    df = dedupe_by_keys(df, [join_key])
+
+df = df.withColumn("load_ts", F.current_timestamp())
+
+# Write: iceberg vs parquet
+if sink.get("format") == "iceberg":
+    # Expect a catalog configured via Spark conf (e.g., glue/hive) and these keys present:
+    # sink = {"format":"iceberg","catalog":"glue_catalog","namespace":"default","table":"TABLE_PLACEHOLDER"}
+    catalog   = sink.get("catalog", "glue_catalog")
+    namespace = sink.get("namespace", "default")
+    table     = sink.get("table", "TABLE_PLACEHOLDER")
+
+    # NOTE: Catalog configuration must be provided in Spark session (catalog type, warehouse, IAM, etc.)
+    # Example (Glue): spark.sql.catalog.glue_catalog = org.apache.iceberg.spark.SparkCatalog
+    #                 spark.sql.catalog.glue_catalog.catalog-impl = org.apache.iceberg.aws.glue.GlueCatalog
+    #                 spark.sql.catalog.glue_catalog.warehouse = s3://my-warehouse/
+    df.writeTo(f"{catalog}.{namespace}.{table}").using("iceberg").createOrReplace()
+else:
+    # Parquet (default local-friendly)
+    from lib.io import write_parquet
+    write_parquet(df, target_path, repartition=repartition, partitionBy=partition_by)
+
+emit_run_stats(
+    env=env,
+    rows_out=df.count(),
+    target=target_path,
+    job="JOB_NAME_PLACEHOLDER"
+)
+PY
+  else
+cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
 import sys
 from pyspark.sql import SparkSession, functions as F
 
@@ -122,6 +216,8 @@ emit_run_stats(
     job="JOB_NAME_PLACEHOLDER"
 )
 PY
+  fi
+
   # fill placeholders
   python3 - "$ROOT/jobs/$JOB_NAME/main.py" <<PY
 import sys,pathlib
@@ -130,6 +226,7 @@ s=p.read_text()
 s=s.replace("INGEST_DT_PLACEHOLDER","${PARTITION_COL}")
 s=s.replace("JOIN_KEY_PLACEHOLDER","${JOIN_KEY}")
 s=s.replace("JOB_NAME_PLACEHOLDER","${JOB_NAME}")
+s=s.replace("TABLE_PLACEHOLDER","${JOB_NAME}")
 p.write_text(s)
 PY
 }
@@ -138,7 +235,84 @@ PY
 # MAIN.PY TEMPLATE (two-source join)
 # ------------------------------
 emit_two_source_main() {
-  cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
+  if (( IS_ICEBERG == 1 )); then
+cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
+import sys
+from pyspark.sql import SparkSession, functions as F
+
+from lib.args import parse_args
+from lib.config import load_config
+from lib.fs import must_exist_glob, ensure_dir
+from lib.io import read_csv, write_parquet
+from lib.dq import require_columns, normalize_lower, dedupe_by_keys
+from lib.logging import emit_run_stats
+
+args = parse_args(sys.argv)
+spark = SparkSession.builder.getOrCreate()
+
+cfg_all = load_config(args["CONFIG_S3_URI"], spark=spark)
+env = args["ENV"]
+cfg = cfg_all[env]
+
+# Config-driven settings
+source_paths = cfg.get("source_paths", {})  # {"left": "...", "right": "..."}
+target_path  = cfg["target_path"]
+repartition  = int(cfg.get("repartition", 8))
+partition_by = cfg.get("partition_col", "INGEST_DT_PLACEHOLDER")
+join_key     = cfg.get("join_key", "JOIN_KEY_PLACEHOLDER")
+sink         = cfg.get("sink", {"format": "parquet"})
+
+# Guards
+for label, path in source_paths.items():
+    must_exist_glob(path, label=f"source:{label}", if_scheme="file")
+ensure_dir(target_path, scheme="file")
+
+left_path  = source_paths.get("left")
+right_path = source_paths.get("right")
+
+left  = read_csv(spark, left_path)
+right = read_csv(spark, right_path)
+
+# Require key + partition in left; key in right
+req_left  = [join_key] + ([partition_by] if partition_by else [])
+req_right = [join_key]
+require_columns(left, req_left)
+require_columns(right, req_right)
+
+# Normalize/clean (apply explicitly)
+if "email" in left.columns:
+    left = normalize_lower(left, "email")
+if "email" in right.columns:
+    right = normalize_lower(right, "email")
+
+# Right side should be unique on join key
+right = right.dropDuplicates([join_key])
+
+enriched = (
+    left.join(F.broadcast(right), on=join_key, how="left")
+        .withColumn("load_ts", F.current_timestamp())
+)
+
+# Write: iceberg vs parquet
+if sink.get("format") == "iceberg":
+    catalog   = sink.get("catalog", "glue_catalog")
+    namespace = sink.get("namespace", "default")
+    table     = sink.get("table", "TABLE_PLACEHOLDER")
+    enriched.writeTo(f"{catalog}.{namespace}.{table}").using("iceberg").createOrReplace()
+else:
+    write_parquet(enriched, target_path, repartition=repartition, partitionBy=partition_by)
+
+emit_run_stats(
+    env=env,
+    rows_in_left=left.count(),
+    rows_in_right=right.count(),
+    rows_out=enriched.count(),
+    target=target_path,
+    job="JOB_NAME_PLACEHOLDER"
+)
+PY
+  else
+cat > "$ROOT/jobs/$JOB_NAME/main.py" <<'PY'
 import sys
 from pyspark.sql import SparkSession, functions as F
 
@@ -180,16 +354,18 @@ req_right = [join_key]
 require_columns(left, req_left)
 require_columns(right, req_right)
 
-# Normalize/clean
-for df in (left, right):
-    if "email" in df.columns:
-        df = normalize_lower(df, "email")
+# Normalize/clean (apply explicitly)
+if "email" in left.columns:
+    left = normalize_lower(left, "email")
+if "email" in right.columns:
+    right = normalize_lower(right, "email")
 
+# Right side should be unique on join key
 right = right.dropDuplicates([join_key])
 
 enriched = (
     left.join(F.broadcast(right), on=join_key, how="left")
-         .withColumn("load_ts", F.current_timestamp())
+        .withColumn("load_ts", F.current_timestamp())
 )
 
 write_parquet(enriched, target_path, repartition=repartition, partitionBy=partition_by)
@@ -203,6 +379,8 @@ emit_run_stats(
     job="JOB_NAME_PLACEHOLDER"
 )
 PY
+  fi
+
   python3 - "$ROOT/jobs/$JOB_NAME/main.py" <<PY
 import sys,pathlib
 p=pathlib.Path(sys.argv[1])
@@ -210,6 +388,7 @@ s=p.read_text()
 s=s.replace("INGEST_DT_PLACEHOLDER","${PARTITION_COL}")
 s=s.replace("JOIN_KEY_PLACEHOLDER","${JOIN_KEY}")
 s=s.replace("JOB_NAME_PLACEHOLDER","${JOB_NAME}")
+s=s.replace("TABLE_PLACEHOLDER","${JOB_NAME}")
 p.write_text(s)
 PY
 }
@@ -219,7 +398,9 @@ PY
 # ------------------------------
 emit_single_source_configs() {
   local ds="${DATASET:-example}"
-  cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
+
+  if (( IS_ICEBERG == 1 )); then
+    cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
 {
   "dev": {
     "source_paths": {
@@ -228,12 +409,17 @@ emit_single_source_configs() {
     "target_path": "file:///ws/out/${JOB_NAME}/dev/",
     "repartition": 4,
     "partition_col": "${PARTITION_COL}",
-    "join_key": "${JOIN_KEY}"
+    "join_key": "${JOIN_KEY}",
+    "sink": {
+      "format": "iceberg",
+      "catalog": "glue_catalog",
+      "namespace": "default",
+      "table": "${JOB_NAME}"
+    }
   }
 }
 JSON
-
-  cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
+    cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
 {
   "prod": {
     "source_paths": {
@@ -242,17 +428,55 @@ JSON
     "target_path": "s3://YOUR-PROD-BUCKET/out/${JOB_NAME}/",
     "repartition": 16,
     "partition_col": "${PARTITION_COL}",
-    "join_key": "${JOIN_KEY}"
+    "join_key": "${JOIN_KEY}",
+    "sink": {
+      "format": "iceberg",
+      "catalog": "glue_catalog",
+      "namespace": "default",
+      "table": "${JOB_NAME}"
+    }
   }
 }
 JSON
+  else
+    cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
+{
+  "dev": {
+    "source_paths": {
+      "primary": "file:///ws/data/${ds}/dev/*.csv"
+    },
+    "target_path": "file:///ws/out/${JOB_NAME}/dev/",
+    "repartition": 4,
+    "partition_col": "${PARTITION_COL}",
+    "join_key": "${JOIN_KEY}",
+    "sink": { "format": "parquet" }
+  }
+}
+JSON
+    cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
+{
+  "prod": {
+    "source_paths": {
+      "primary": "s3://YOUR-PROD-BUCKET/${ds}/*.csv"
+    },
+    "target_path": "s3://YOUR-PROD-BUCKET/out/${JOB_NAME}/",
+    "repartition": 16,
+    "partition_col": "${PARTITION_COL}",
+    "join_key": "${JOIN_KEY}",
+    "sink": { "format": "parquet" }
+  }
+}
+JSON
+  fi
 }
 
 emit_two_source_configs() {
   IFS=',' read -r SRC1 SRC2 <<< "$TWO_SOURCE"
   SRC1="${SRC1:-left}"
   SRC2="${SRC2:-right}"
-  cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
+
+  if (( IS_ICEBERG == 1 )); then
+    cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
 {
   "dev": {
     "source_paths": {
@@ -262,12 +486,17 @@ emit_two_source_configs() {
     "target_path": "file:///ws/out/${JOB_NAME}/dev/",
     "repartition": 4,
     "partition_col": "${PARTITION_COL}",
-    "join_key": "${JOIN_KEY}"
+    "join_key": "${JOIN_KEY}",
+    "sink": {
+      "format": "iceberg",
+      "catalog": "glue_catalog",
+      "namespace": "default",
+      "table": "${JOB_NAME}"
+    }
   }
 }
 JSON
-
-  cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
+    cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
 {
   "prod": {
     "source_paths": {
@@ -277,10 +506,48 @@ JSON
     "target_path": "s3://YOUR-PROD-BUCKET/out/${JOB_NAME}/",
     "repartition": 16,
     "partition_col": "${PARTITION_COL}",
-    "join_key": "${JOIN_KEY}"
+    "join_key": "${JOIN_KEY}",
+    "sink": {
+      "format": "iceberg",
+      "catalog": "glue_catalog",
+      "namespace": "default",
+      "table": "${JOB_NAME}"
+    }
   }
 }
 JSON
+  else
+    cat > "$ROOT/jobs/$JOB_NAME/config/dev.json" <<JSON
+{
+  "dev": {
+    "source_paths": {
+      "left":  "file:///ws/data/${SRC1}/dev/*.csv",
+      "right": "file:///ws/data/${SRC2}/dev/*.csv"
+    },
+    "target_path": "file:///ws/out/${JOB_NAME}/dev/",
+    "repartition": 4,
+    "partition_col": "${PARTITION_COL}",
+    "join_key": "${JOIN_KEY}",
+    "sink": { "format": "parquet" }
+  }
+}
+JSON
+    cat > "$ROOT/jobs/$JOB_NAME/config/prod.json" <<JSON
+{
+  "prod": {
+    "source_paths": {
+      "left":  "s3://YOUR-PROD-BUCKET/${SRC1}/*.csv",
+      "right": "s3://YOUR-PROD-BUCKET/${SRC2}/*.csv"
+    },
+    "target_path": "s3://YOUR-PROD-BUCKET/out/${JOB_NAME}/",
+    "repartition": 16,
+    "partition_col": "${PARTITION_COL}",
+    "join_key": "${JOIN_KEY}",
+    "sink": { "format": "parquet" }
+  }
+}
+JSON
+  fi
 }
 
 # ------------------------------
@@ -307,7 +574,8 @@ def test_e2e_JOBNAME_single(spark, tmp_path):
             "target_path":  f"file://{out_dir}/",
             "repartition":  2,
             "partition_col": "PARTITION_PLACEHOLDER",
-            "join_key": "JOIN_KEY_PLACEHOLDER"
+            "join_key": "JOIN_KEY_PLACEHOLDER",
+            "sink": { "format": "parquet" }
         }
     }
     cfg_path = tmp_path / "cfg.json"
@@ -367,7 +635,8 @@ def test_e2e_JOBNAME_two_sources(spark, tmp_path):
             "target_path":  f"file://{out_dir}/",
             "repartition":  2,
             "partition_col": "PARTITION_PLACEHOLDER",
-            "join_key": "JOIN_KEY_PLACEHOLDER"
+            "join_key": "JOIN_KEY_PLACEHOLDER",
+            "sink": { "format": "parquet" }
         }
     }
     cfg_path = tmp_path / "cfg.json"
