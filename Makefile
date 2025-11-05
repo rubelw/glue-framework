@@ -23,6 +23,7 @@ RUN_CMD = docker run --rm -it \
   -v $$(PWD):/ws \
   -w /ws \
   -e AWS_PROFILE="$(AWS_PROFILE)" \
+  -e PYTHONPATH="/ws" \
   -p $(SPARK_UI_PORT):4040 -p $(HISTORY_PORT):18080 \
   --entrypoint /bin/bash \
   $(GLUE_IMAGE) \

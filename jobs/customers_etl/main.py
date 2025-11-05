@@ -1,45 +1,47 @@
-import sys, json, time
-from awsglue.utils import getResolvedOptions
+import sys
 from pyspark.sql import SparkSession, functions as F
 
-ARG_NAMES = ["ENV", "CONFIG_S3_URI", "BOOKMARKED"]
-args = getResolvedOptions(sys.argv, ARG_NAMES)
+from lib.args import parse_args
+from lib.config import load_config
+from lib.fs import must_exist_glob, ensure_dir
+from lib.io import read_csv, write_parquet
+from lib.dq import dedupe_by_keys, normalize_lower, require_columns
+from lib.logging import emit_run_stats
 
+# ---- args & spark ----
+args = parse_args(sys.argv)
 spark = SparkSession.builder.getOrCreate()
 
-def load_config(uri: str) -> dict:
-  if uri.startswith("file://"):
-    path = uri.replace("file://", "")
-    with open(path, "r") as f:
-      return json.load(f)
-  # (Optional) Support s3a:// for local S3 testing with creds:
-  if uri.startswith("s3a://"):
-    df = spark.read.text(uri)
-    raw = "\n".join(r.value for r in df.collect())
-    return json.loads(raw)
-  raise ValueError(f"Unsupported CONFIG_S3_URI: {uri}")
-
-cfg = load_config(args["CONFIG_S3_URI"])
+# ---- config ----
+cfg_all = load_config(args["CONFIG_S3_URI"], spark=spark)
 env = args["ENV"]
-job_cfg = cfg[env]
+cfg = cfg_all[env]
 
-src_path = job_cfg["source_path"]           # e.g., file:///ws/data/customers/*.csv
-tgt_path = job_cfg["target_path"]           # e.g., file:///ws/out/customers/
-repart   = int(job_cfg.get("repartition", 8))
+src_path  = cfg["source_path"]                 # file:/// or s3a://
+tgt_path  = cfg["target_path"]
+repart    = int(cfg.get("repartition", 8))
+partition = cfg.get("partition_col", "ingest_dt")
 
-df = (spark.read.option("header", "true").csv(src_path))
-df_clean = (df.dropDuplicates(["customer_id"])
-              .withColumn("email", F.lower(F.col("email")))
-              .withColumn("load_ts", F.current_timestamp()))
+# ---- local guardrails (no-op for s3a://) ----
+must_exist_glob(src_path, label="source_path", if_scheme="file")
+ensure_dir(tgt_path, scheme="file")
 
-(df_clean.repartition(repart)
-        .write.mode("overwrite")
-        .partitionBy("ingest_dt")
-        .parquet(tgt_path))
+# ---- read ----
+df = read_csv(spark, src_path)
 
-print(json.dumps({
-  "env": env,
-  "rows_out": df_clean.count(),
-  "target": tgt_path,
-  "ts": int(time.time())
-}))
+# Require columns that actually apply to this job
+required_cols = ["customer_id", "email"]
+if partition:
+    required_cols.append(partition)
+require_columns(df, required_cols)
+
+# ---- transforms ----
+df = dedupe_by_keys(df, ["customer_id"])
+df = normalize_lower(df, "email")
+df = df.withColumn("load_ts", F.current_timestamp())
+
+# ---- write ----
+write_parquet(df, tgt_path, repartition=repart, partitionBy=partition)
+
+# ---- run stats ----
+emit_run_stats(env=env, rows_out=df.count(), target=tgt_path, job="customers_etl")

@@ -1,10 +1,12 @@
 {
   "dev": {
-    "orders_path": "file:///ws/data/orders/dev/*.csv",
-    "customers_path": "file:///ws/data/customers/dev/*.csv",
+    "source_paths": {
+      "left":  "file:///ws/data/orders/dev/*.csv",
+      "right": "file:///ws/data/customers/dev/*.csv"
+    },
     "target_path": "file:///ws/out/orders_enrichment/dev/",
     "repartition": 4,
-    "join_key": "customer_id",
-    "partition_col": "order_dt"
+    "partition_col": "order_dt",
+    "join_key": "customer_id"
   }
 }

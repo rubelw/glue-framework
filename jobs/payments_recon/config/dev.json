@@ -1,0 +1,12 @@
+{
+  "dev": {
+    "source_paths": {
+      "left":  "file:///ws/data/payments/dev/*.csv",
+      "right": "file:///ws/data/orders/dev/*.csv"
+    },
+    "target_path": "file:///ws/out/payments_recon/dev/",
+    "repartition": 4,
+    "partition_col": "txn_dt",
+    "join_key": "order_id"
+  }
+}

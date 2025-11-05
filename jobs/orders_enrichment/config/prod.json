@@ -1,10 +1,12 @@
 {
   "prod": {
-    "orders_path": "s3://YOUR-PROD-BUCKET/orders/*.csv",
-    "customers_path": "s3://YOUR-PROD-BUCKET/customers/*.csv",
+    "source_paths": {
+      "left":  "s3://YOUR-PROD-BUCKET/orders/*.csv",
+      "right": "s3://YOUR-PROD-BUCKET/customers/*.csv"
+    },
     "target_path": "s3://YOUR-PROD-BUCKET/out/orders_enrichment/",
     "repartition": 16,
-    "join_key": "customer_id",
-    "partition_col": "order_dt"
+    "partition_col": "order_dt",
+    "join_key": "customer_id"
   }
 }

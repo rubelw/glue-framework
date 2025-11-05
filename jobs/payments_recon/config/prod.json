@@ -1,0 +1,12 @@
+{
+  "prod": {
+    "source_paths": {
+      "left":  "s3://YOUR-PROD-BUCKET/payments/*.csv",
+      "right": "s3://YOUR-PROD-BUCKET/orders/*.csv"
+    },
+    "target_path": "s3://YOUR-PROD-BUCKET/out/payments_recon/",
+    "repartition": 16,
+    "partition_col": "txn_dt",
+    "join_key": "order_id"
+  }
+}
