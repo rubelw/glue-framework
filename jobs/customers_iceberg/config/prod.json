@@ -1,15 +1,13 @@
 {
-  "prod": {
-    "source_paths": {
-      "primary": "s3://YOUR-PROD-BUCKET/customers/*.csv"
-    },
-    "target_path": "s3://YOUR-PROD-BUCKET/out/customers_iceberg/",
-    "repartition": 16,
+  "dev": {
+    "source_paths": { "primary": "file:///ws/data/customers/*.csv" },
+    "target_path": "file:///ws/out/customers_iceberg/",
+    "repartition": 2,
     "partition_col": "ingest_dt",
     "join_key": "customer_id",
     "sink": {
       "format": "iceberg",
-      "catalog": "glue_catalog",
+      "catalog": "local",
       "namespace": "default",
       "table": "customers_iceberg"
     }
