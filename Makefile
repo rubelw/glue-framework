@@ -9,6 +9,14 @@ GLUE_IMAGE ?= public.ecr.aws/glue/aws-glue-libs:5
 SPARK_UI_PORT ?= 4040
 HISTORY_PORT ?= 18080
 
+# Use bash and sane flags
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+# Where optional seed templates live (override if you want)
+SEED_TEMPLATES ?= seeds
+
+
 # ---- Internal: the exact docker run you asked for (parameterized) ----
 RUN_CMD = docker run --rm -it \
   -v $$HOME/.aws:/home/hadoop/.aws:ro \
@@ -26,7 +34,7 @@ RUN_CMD = docker run --rm -it \
         --CONFIG_S3_URI=file:///ws/jobs/$(JOB)/config/$(ENV).json \
         --BOOKMARKED=false'
 
-.PHONY: run run-customers-dev seed-dev-data ensure_docker pull
+.PHONY: run run-customers-dev seed-dev seed-%-dev ensure_docker pull
 
 # Run the job (defaults: JOB=customers_etl, ENV=dev)
 run: ensure_docker
@@ -55,11 +63,39 @@ ensure_docker:
 		docker info >/dev/null 2>&1 || (echo "[ERROR] Docker daemon still not ready." && exit 1) \
 	)
 
-# Seed a tiny CSV dataset so the job has input files
-seed-dev-data:
-	@mkdir -p data/customers/dev
-	@printf "customer_id,email,ingest_dt\n1,Alice@example.com,2025-11-01\n2,bob@Example.com,2025-11-01\n2,bob@Example.com,2025-11-01\n3,Carla@EXAMPLE.COM,2025-11-02\n" > data/customers/dev/customers_part1.csv
-	@echo "[OK] Wrote data/customers/dev/customers_part1.csv"
+# Seed a single dataset's dev folder.
+# Usage: make seed-orders-dev   or   make seed-customers-dev
+seed-%-dev:
+	@dataset=$* ; \
+	data_dir="data/$$dataset/dev"; \
+	echo "[INFO] Seeding $$dataset for dev environment..."; \
+	mkdir -p "$$data_dir"; \
+	if ls "$$data_dir"/*.csv >/dev/null 2>&1; then \
+	  echo "[OK] Existing CSV files found in $$data_dir — skipping seed."; \
+	elif [ -f "$(SEED_TEMPLATES)/$$dataset.csv" ]; then \
+	  cp "$(SEED_TEMPLATES)/$$dataset.csv" "$$data_dir/"; \
+	  echo "[OK] Copied template from $(SEED_TEMPLATES)/$$dataset.csv"; \
+	else \
+	  echo "[WARN] No template or existing data found for $$dataset, creating placeholder"; \
+	  echo "id,value" > "$$data_dir/sample.csv"; \
+	  echo "[OK] Wrote $$data_dir/sample.csv"; \
+	fi
+
+# Seed every dataset dir under ./data
+seed-dev:
+	@echo "[INFO] Seeding all datasets under ./data/"
+	@for d in data/*; do \
+	  if [ -d "$$d" ]; then \
+	    name=$$(basename "$$d"); \
+	    $(MAKE) --no-print-directory seed-$$name-dev; \
+	  fi; \
+	done
+	@echo "[DONE] All available datasets seeded."
+
+# Clean outputs
+clean-out:
+	@rm -rf out/* || true
+	@echo "[OK] Cleared ./out"
 
 .PHONY: test-fast
 test-fast: ensure_docker
@@ -82,4 +118,4 @@ test: ensure_docker
 	  -e AWS_PROFILE="$(AWS_PROFILE)" \
 	  --entrypoint /bin/bash \
 	  $(GLUE_IMAGE) \
-	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -q'
+	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -vv -ra --durations=10 --junitxml=out/test-results.xml'

@@ -15,3 +15,20 @@ def spark():
     )
     yield spark
     spark.stop()
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Enhance the end-of-run summary with explicit lists."""
+    tr = terminalreporter
+
+    def _section(title, reports):
+        if reports:
+            tr.write_sep("=", title)
+            for rep in reports:
+                # nodeid includes file::class::test[param], nice and explicit
+                tr.write_line(f"- {rep.nodeid}")
+
+    _section("PASSED", tr.stats.get("passed", []))
+    _section("FAILED", tr.stats.get("failed", []))
+    _section("SKIPPED", tr.stats.get("skipped", []))
+    _section("XFAILED", tr.stats.get("xfailed", []))
+    _section("XPASSED", tr.stats.get("xpassed", []))

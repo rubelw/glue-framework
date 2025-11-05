@@ -1,6 +1,9 @@
 # pyproject.toml
 [tool.pytest.ini_options]
-addopts = "-q"
+# -vv  : very verbose (show each test name & params)
+# -ra  : extra summary (skipped, xfailed, xpassed, failed)
+# --durations=10 : show 10 slowest tests
+addopts = "-vv -ra --durations=10"
 python_files = "test_*.py"
 testpaths = ["tests/unit"]
 filterwarnings = [
