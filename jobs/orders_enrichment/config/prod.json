@@ -1,12 +1,30 @@
 {
   "prod": {
-    "source_paths": {
-      "left":  "s3://YOUR-PROD-BUCKET/orders/*.csv",
-      "right": "s3://YOUR-PROD-BUCKET/customers/*.csv"
-    },
-    "target_path": "s3://YOUR-PROD-BUCKET/out/orders_enrichment/",
-    "repartition": 16,
+    "target_path": "s3a://warehouse/orders_enrichment/prod/",
+    "repartition": 8,
     "partition_col": "order_dt",
-    "join_key": "customer_id"
+    "join_key": "customer_id",
+
+    "left_db2": {
+      "host": "db2.prod.internal",
+      "port": 50000,
+      "database": "PRODDB",
+      "schema": "DB2INST1",
+      "table": "ORDERS_PROD",
+      "user": "glue_reader",
+      "password": "REDACTED",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver"
+    },
+
+    "right_db2": {
+      "host": "db2.prod.internal",
+      "port": 50000,
+      "database": "PRODDB",
+      "schema": "DB2INST1",
+      "table": "CUSTOMERS_PROD",
+      "user": "glue_reader",
+      "password": "REDACTED",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver"
+    }
   }
 }

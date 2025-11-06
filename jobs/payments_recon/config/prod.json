@@ -1,12 +1,44 @@
 {
   "prod": {
-    "source_paths": {
-      "left":  "s3://YOUR-PROD-BUCKET/payments/*.csv",
-      "right": "s3://YOUR-PROD-BUCKET/orders/*.csv"
-    },
-    "target_path": "s3://YOUR-PROD-BUCKET/out/payments_recon/",
-    "repartition": 16,
+    "target_path": "file:///ws/out/payments_recon/",
+    "repartition": 2,
     "partition_col": "txn_dt",
-    "join_key": "order_id"
+    "join_key": "order_id",
+
+    "left_db2": {
+      "host": "localhost",
+      "port": 50000,
+      "database": "TESTDB",
+      "schema": "DB2INST1",
+      "table": "PAYMENTS_PROD",
+      "user": "db2inst1",
+      "password": "password",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver",
+      "jdbc_jar": "/opt/jars/db2jcc4.jar",
+      "partition": {
+        "column": "ORDER_ID",
+        "lower_bound": 1,
+        "upper_bound": 1000000,
+        "num_partitions": 4
+      }
+    },
+
+    "right_db2": {
+      "host": "localhost",
+      "port": 50000,
+      "database": "TESTDB",
+      "schema": "DB2INST1",
+      "table": "ORDERS_DEV",
+      "user": "db2inst1",
+      "password": "password",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver",
+      "jdbc_jar": "/opt/jars/db2jcc4.jar",
+      "partition": {
+        "column": "ORDER_ID",
+        "lower_bound": 1,
+        "upper_bound": 1000000,
+        "num_partitions": 4
+      }
+    }
   }
 }

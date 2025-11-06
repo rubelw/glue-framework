@@ -1,12 +1,24 @@
 {
   "dev": {
-    "source_path": "file:///ws/data/customers/dev/*.csv",
     "target_path": "file:///ws/out/customers/dev/",
-    "repartition": 4
-  },
-  "prod": {
-    "source_path": "file:///ws/data/customers/prod/*.csv",
-    "target_path": "file:///ws/out/customers/prod/",
-    "repartition": 16
+    "repartition": 4,
+    "partition_col": "ingest_dt",
+    "db2": {
+      "host": "localhost",
+      "port": 50000,
+      "database": "TESTDB",
+      "schema": "DB2INST1",
+      "table": "CUSTOMERS_DEV",
+      "user": "db2inst1",
+      "password": "password",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver",
+      "jdbc_jar": "/opt/jars/db2jcc4.jar",
+      "partition": {
+        "column": "CUSTOMER_ID",
+        "lower_bound": 1,
+        "upper_bound": 100000,
+        "num_partitions": 4
+      }
+    }
   }
 }
