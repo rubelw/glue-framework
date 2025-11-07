@@ -33,6 +33,15 @@ DB2_PASSWORD          ?= password
 DB2_DBNAME            ?= TESTDB
 DB2_SAMPLEDB          ?= true
 
+# --- Integration DB knobs (local Postgres just for tests) ---
+PG_CONTAINER_NAME ?= pg-int
+PG_IMAGE          ?= postgres:15
+PG_PORT           ?= 5432
+PG_USER           ?= postgres
+PG_PASSWORD       ?= password
+PG_DB             ?= postgres
+
+
 # --- Step 3: Auto-inject Iceberg config when config JSON says "format": "iceberg"
 # Detect if this job/env is Iceberg based on the config JSON
 IS_ICEBERG_JOB := $(shell grep -q '"format"[[:space:]]*:[[:space:]]*"iceberg"' jobs/$(JOB)/config/$(ENV).json 2>/dev/null && echo 1 || echo 0)
@@ -176,15 +185,33 @@ clean-out:
 # -----------
 # Test targets
 # -----------
-test-fast: ensure_docker
-	docker run --rm -it \
+test-integration:
+	@echo "[INFO] Running integration tests in Glue 5.0 container"
+	@docker run --rm -it \
 	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
 	  -v $$(PWD):/ws \
 	  -w /ws \
 	  -e AWS_PROFILE="$(AWS_PROFILE)" \
+	  -e PYTHONPATH="/ws" \
+	  -e RUN_INTEGRATION=1 \
+	  -e RUN_DB2_TESTS=1 \
+	  -e RUN_PG_TESTS=1 \
+	  -e DB2_HOST=host.docker.internal \
+	  -e DB2_PORT=$(DB2_PORT) \
+	  -e DB2_DBNAME=$(DB2_DBNAME) \
+	  -e DB2_USER=$(DB2_INSTANCE) \
+	  -e DB2_PASSWORD=$(DB2_PASSWORD) \
+	  -e PG_HOST=host.docker.internal \
+	  -e PG_PORT=$(PG_PORT) \
+	  -e PG_DB=$(PG_DB) \
+	  -e PG_USER=$(PG_USER) \
+	  -e PG_PASSWORD=$(PG_PASSWORD) \
 	  --entrypoint /bin/bash \
 	  $(DOCKER_IMAGE) \
-	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -q tests/unit/test_transform.py'
+     -lc "python3 -m pip install -U pip pytest && \
+           echo '[TEST] Using JDBC jars: /ws/jars/db2jcc4.jar,/ws/jars/postgresql-42.7.4.jar' && \
+           python3 -m pytest -m integration --with-integration -vv -ra --durations=10 tests/integration"
+
 
 test: ensure_docker
 	@echo "[INFO] Running unit tests in Glue 5.0 container"
