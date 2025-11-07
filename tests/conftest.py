@@ -25,10 +25,31 @@ def _set_default_env():
     # Postgres defaults
     os.environ.setdefault("PG_HOST", "127.0.0.1")
     os.environ.setdefault("PG_PORT", "5432")
-    os.environ.setdefault("PG_DBNAME", "analytics")
+    os.environ.setdefault("PG_DBNAME", "postgres")
     os.environ.setdefault("PG_USER", "postgres")
     os.environ.setdefault("PG_PASSWORD", "password")
 
+@pytest.fixture(scope="session")
+def data_dir() -> Path:
+    # Primary location inside tests/
+    tests_data = Path(__file__).resolve().parent / "data"
+    if tests_data.exists():
+        return tests_data
+
+    # Fallbacks (for safety in odd CI layouts)
+    repo_root = Path(__file__).resolve().parents[1]
+    legacy = repo_root / "data"
+    if legacy.exists():
+        return legacy
+
+    # Allow override via env if you ever need to
+    override = os.getenv("DATA_DIR")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return p
+
+    raise FileNotFoundError("Could not locate tests/data or a DATA_DIR override.")
 
 # ========================
 # CLI option & markers
@@ -121,7 +142,7 @@ def pytest_configure(config):
     # On macOS Docker, 'host.docker.internal' reaches the host network.
     os.environ.setdefault("PG_HOST", "host.docker.internal")
     os.environ.setdefault("PG_PORT", "5432")
-    os.environ.setdefault("PG_DBNAME", "analytics")
+    os.environ.setdefault("PG_DBNAME", "postgres")
     os.environ.setdefault("PG_USER", "postgres")
     os.environ.setdefault("PG_PASSWORD", "password")
 

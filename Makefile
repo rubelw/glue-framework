@@ -25,7 +25,7 @@ MINIO_IMAGE           ?= quay.io/minio/minio:latest
 # DB2 runs x86_64; force emulation on Apple Silicon
 DB2_PLATFORM ?= linux/amd64
 
-DB2_CONTAINER_NAME    ?= db2
+DB2_CONTAINER_NAME    ?= db2-int
 DB2_IMAGE             ?= icr.io/db2_community/db2
 DB2_PORT              ?= 50000
 DB2_INSTANCE          ?= db2inst1
@@ -68,27 +68,31 @@ endif
 # Detect docker compose
 HAS_COMPOSE := $(shell command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && echo 1 || echo 0)
 
+
+# --- Shared bridge network for tests ---
+ETL_NET ?= etl-int
+
+.PHONY: up-net down-net
+up-net:
+	@docker network inspect $(ETL_NET) >/dev/null 2>&1 || { \
+	  echo "[INFO] Creating network $(ETL_NET)"; \
+	  docker network create $(ETL_NET) >/dev/null; \
+	}
+
+down-net:
+	@docker network rm $(ETL_NET) >/dev/null 2>&1 || true
+
+
 .PHONY: start stop status
 
-start: ensure_docker
-	@MINIO_CONTAINER_NAME='$(MINIO_CONTAINER_NAME)' \
-	 MINIO_IMAGE='$(MINIO_IMAGE)' \
-	 LOCAL_S3_ACCESS_KEY='$(LOCAL_S3_ACCESS_KEY)' \
-	 LOCAL_S3_SECRET_KEY='$(LOCAL_S3_SECRET_KEY)' \
-	 MINIO_ENDPOINT='$(MINIO_ENDPOINT)' \
-	 DB2_CONTAINER_NAME='$(DB2_CONTAINER_NAME)' \
-	 DB2_IMAGE='$(DB2_IMAGE)' \
-	 DB2_PORT='$(DB2_PORT)' \
-	 DB2_INSTANCE='$(DB2_INSTANCE)' \
-	 DB2_PASSWORD='$(DB2_PASSWORD)' \
-	 DB2_DBNAME='$(DB2_DBNAME)' \
-	 DB2_SAMPLEDB='$(DB2_SAMPLEDB)' \
-	 bash scripts/start_infra.sh
+
 
 stop:
-	@MINIO_CONTAINER_NAME='$(MINIO_CONTAINER_NAME)' \
-	 DB2_CONTAINER_NAME='$(DB2_CONTAINER_NAME)' \
-	 bash scripts/stop_infra.sh
+	@echo "[INFO] Stopping infrastructure…"
+	-docker rm -f pg-int db2-int 2>/dev/null || true
+	-docker network rm etl-int 2>/dev/null || true
+	-docker volume rm glue-framework_db2data glue-framework_pgdata 2>/dev/null || true
+	@echo "[OK] Infrastructure stopped and cleaned up."
 
 status:
 	@echo "---- Containers ----"
@@ -97,8 +101,8 @@ status:
 # Where optional seed templates live (override if you want)
 SEED_TEMPLATES ?= seeds
 
-.PHONY: run run-customers-dev seed-dev seed-%-dev ensure_docker pull clean-out test-fast test \
-        setup setup-profile-local-s3 check-local-s3 ensure-warehouse-bucket
+.PHONY: run run-customers-dev seed-dev seed-%-dev ensure_docker pull clean-out test \
+        setup-profile-local-s3 check-local-s3 ensure-warehouse-bucket
 
 # Pull the Glue image (optional but nice the first time)
 pull:
@@ -182,10 +186,141 @@ clean-out:
 	@rm -rf out/* || true
 	@echo "[OK] Cleared ./out"
 
-# -----------
-# Test targets
-# -----------
-test-integration:
+
+# ---------- Postgres ----------
+.PHONY: up-pg down-pg wait-pg
+
+PG_CONTAINER_NAME ?= pg-int
+PG_IMAGE          ?= postgres:15
+PG_PORT           ?= 5432
+PG_USER           ?= postgres
+PG_PASSWORD       ?= postgres
+PG_DB             ?= postgres
+
+up-pg: up-net
+	@echo "[INFO] Starting Postgres '$(PG_CONTAINER_NAME)' on $(ETL_NET) and mapping host port $(PG_PORT)..."
+	@docker rm -f $(PG_CONTAINER_NAME) >/dev/null 2>&1 || true
+	@docker run -d --name $(PG_CONTAINER_NAME) \
+		--network $(ETL_NET) \
+		-p $(PG_PORT):5432 \
+		-e POSTGRES_USER=$(PG_USER) \
+		-e POSTGRES_PASSWORD=$(PG_PASSWORD) \
+		-e POSTGRES_DB=$(PG_DB) \
+		$(PG_IMAGE) >/dev/null
+	@$(MAKE) --no-print-directory wait-pg
+
+down-pg:
+	@echo "[INFO] Stopping Postgres test container..."
+	@docker rm -f $(PG_CONTAINER_NAME) >/dev/null 2>&1 || true
+
+wait-pg:
+	@echo "[INFO] Waiting for Postgres readiness on localhost:$(PG_PORT)..."
+	@i=0; \
+	while ! (echo >/dev/tcp/127.0.0.1/$(PG_PORT)) >/dev/null 2>&1; do \
+	  i=$$((i+1)); [ $$i -gt 60 ] && echo "[ERROR] PG not up after 60s" && exit 1; \
+	  sleep 1; \
+	done; \
+	echo "[INFO] Waiting for pg_isready inside container..."; \
+	until docker exec $(PG_CONTAINER_NAME) pg_isready -U $(PG_USER) >/dev/null 2>&1; do \
+	  sleep 1; \
+	done; \
+	echo "[OK] Postgres is ready."
+
+create-pg-db:
+	@echo "[INFO] Ensuring database '$(PG_DB)' exists..."
+	@docker exec -i $(PG_CONTAINER_NAME) \
+	  psql -h 127.0.0.1 -U $(PG_USER) -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$(PG_DB)'" | grep -q 1 || \
+	  docker exec -i $(PG_CONTAINER_NAME) \
+	    psql -h 127.0.0.1 -U $(PG_USER) -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $(PG_DB)" || true
+	@echo "[OK] Database '$(PG_DB)' is present."
+
+# ---------- Db2 (on shared network) ----------
+.PHONY: up-db2 down-db2 wait-db2-tcp wait-db2-setup wait-db2-sql seed-db2
+
+
+up-db2: up-net
+	@echo "[INFO] Starting Db2 '$(DB2_CONTAINER_NAME)' on $(ETL_NET) and mapping host port $(DB2_PORT)..."
+	@docker rm -f $(DB2_CONTAINER_NAME) >/dev/null 2>&1 || true
+	@docker run -d --name $(DB2_CONTAINER_NAME) \
+		--network $(ETL_NET) \
+		--privileged \
+		-e LICENSE=accept \
+		-e DB2INSTANCE=$(DB2_INSTANCE) \
+		-e DB2INST1_PASSWORD=$(DB2_PASSWORD) \
+		-e DBNAME=$(DB2_DBNAME) \
+		-p $(DB2_PORT):50000 \
+		$(DB2_IMAGE) >/dev/null
+	@echo "[INFO] Db2 mapped host:localhost:$(DB2_PORT) -> container:50000"
+	@$(MAKE) --no-print-directory wait-db2-tcp wait-db2-setup wait-db2-sql
+
+down-db2:
+	@echo "[INFO] Stopping Db2 test container..."
+	@docker rm -f $(DB2_CONTAINER_NAME) >/dev/null 2>&1 || true
+
+wait-db2-tcp:
+	@echo "[INFO] Waiting for Db2 TCP on localhost:$(DB2_PORT)..."
+	@i=0; \
+	while ! (echo >/dev/tcp/127.0.0.1/$(DB2_PORT)) >/dev/null 2>&1; do \
+	  i=$$((i+1)); [ $$i -gt 180 ] && echo "[ERROR] Db2 TCP not up after 180s" && exit 1; \
+	  sleep 2; \
+	done; \
+	echo "[OK] Db2 TCP is accepting connections."
+
+wait-db2-setup:
+	@echo "[INFO] Waiting for Db2 container setup to complete (watching logs for 'Setup has completed')..."
+	@i=0; \
+	while ! docker logs $(DB2_CONTAINER_NAME) 2>&1 | grep -q "Setup has completed"; do \
+	  i=$$((i+1)); [ $$i -gt 450 ] && echo "[ERROR] Db2 setup did not complete after 900s" && exit 1; \
+	  sleep 2; \
+	done; \
+	echo "[OK] Db2 setup has completed."
+
+# IMPORTANT: run as db2inst1 and source profile before any db2 commands.
+wait-db2-sql:
+	@echo "[INFO] Waiting for Db2 SQL connect to $(DB2_DBNAME) as $(DB2_INSTANCE)…"
+	@i=0; \
+	while true; do \
+	  if docker exec -u $(DB2_INSTANCE) $(DB2_CONTAINER_NAME) bash -lc 'source $$HOME/sqllib/db2profile >/dev/null 2>&1 || true; db2start >/dev/null 2>&1 || true; db2 list db directory' >/dev/null 2>&1; then \
+	    break; \
+	  fi; \
+	  i=$$((i+1)); [ $$i -gt 120 ] && echo "[ERROR] Db2 instance not ready after 240s" && exit 1; \
+	  sleep 2; \
+	done; \
+	# Ensure TESTDB exists (first boot may not have it)
+	if ! docker exec -u $(DB2_INSTANCE) $(DB2_CONTAINER_NAME) bash -lc 'source $$HOME/sqllib/db2profile; db2 list db directory | grep -q "$(DB2_DBNAME)"'; then \
+	  echo "[INFO] Creating database $(DB2_DBNAME)…"; \
+	  docker exec -u $(DB2_INSTANCE) $(DB2_CONTAINER_NAME) bash -lc 'source $$HOME/sqllib/db2profile; db2 -v create database $(DB2_DBNAME) using codeset UTF-8 territory US' >/dev/null; \
+	fi; \
+	# Final connect check with credentials
+	if docker exec -u $(DB2_INSTANCE) $(DB2_CONTAINER_NAME) bash -lc 'source $$HOME/sqllib/db2profile; db2 -v connect to $(DB2_DBNAME) user $(DB2_INSTANCE) using $(DB2_PASSWORD) ; db2 terminate' >/dev/null 2>&1; then \
+	  echo "[OK] Db2 SQL is ready."; \
+	else \
+	  echo "[ERROR] Db2 SQL connect still failing."; exit 1; \
+	fi
+
+seed-db2:
+	@set -e
+	@echo "[INFO] Seeding Db2 TESTDB.DB2INST1.CUSTOMERS_DEV (idempotent)…"
+	@docker exec -u db2inst1 db2-int bash -lc 'set -e; source $$HOME/sqllib/db2profile; \
+	  db2 -v connect to TESTDB >/dev/null; \
+	  if db2 -x "select 1 from syscat.tables where tabschema='\''DB2INST1'\'' and tabname='\''CUSTOMERS_DEV'\''" | grep -q 1; then \
+	    echo "[OK] Table already exists."; \
+	  else \
+	    echo "[INFO] Creating and seeding table…"; \
+	    printf "%s\n" \
+"CREATE TABLE DB2INST1.CUSTOMERS_DEV (" \
+"  CUSTOMER_ID INT NOT NULL PRIMARY KEY," \
+"  EMAIL       VARCHAR(255)," \
+"  INGEST_DT   DATE" \
+");" \
+"INSERT INTO DB2INST1.CUSTOMERS_DEV (CUSTOMER_ID, EMAIL, INGEST_DT) VALUES (1, '\''alice@example.com'\'', CURRENT DATE);" \
+"INSERT INTO DB2INST1.CUSTOMERS_DEV (CUSTOMER_ID, EMAIL, INGEST_DT) VALUES (2, '\''bob@example.com'\'',   CURRENT DATE);" \
+	    | db2 -tvf /dev/stdin ; \
+	  fi; \
+	  db2 terminate >/dev/null'
+
+# ---------- Run integration tests on the same network ----------
+test-integration: ensure_docker up-net up-pg up-db2 seed-db2
 	@echo "[INFO] Running integration tests in Glue 5.0 container"
 	@docker run --rm -it \
 	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
@@ -208,9 +343,7 @@ test-integration:
 	  -e PG_PASSWORD=$(PG_PASSWORD) \
 	  --entrypoint /bin/bash \
 	  $(DOCKER_IMAGE) \
-     -lc "python3 -m pip install -U pip pytest && \
-           echo '[TEST] Using JDBC jars: /ws/jars/db2jcc4.jar,/ws/jars/postgresql-42.7.4.jar' && \
-           python3 -m pytest -m integration --with-integration -vv -ra --durations=10 tests/integration"
+	  -lc "python3 -m pip install -U pip pytest && echo '[TEST] Using JDBC jars: /ws/jars/db2jcc4.jar,/ws/jars/postgresql-42.7.4.jar' && python3 -m pytest -m integration --with-integration -vv -ra --durations=10 tests/integration"
 
 
 test: ensure_docker
@@ -224,14 +357,3 @@ test: ensure_docker
 	  $(DOCKER_IMAGE) \
 	  -lc 'python3 -m pip install -U pip pytest && PYTHONPATH=/ws python3 -m pytest -vv -ra --durations=10 --junitxml=out/test-results.xml'
 
-# -----------------------------------------------------------------------------
-# Step 2. Setup local S3 + warehouse (delegates to scripts/setup_infra.sh)
-# -----------------------------------------------------------------------------
-setup:
-	@echo "[INFO] Running setup for local S3 and warehouse bucket..."
-	@if [ ! -f scripts/setup_infra.sh ]; then \
-		echo "[ERROR] scripts/setup_infra.sh not found. Please make sure it exists."; \
-		exit 1; \
-	fi
-	@chmod +x scripts/setup_infra.sh
-	@./scripts/setup_infra.sh
