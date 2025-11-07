@@ -733,6 +733,40 @@ ensure_warehouse_bucket() {
   fi
 }
 
+# ---- Ensure psql (PostgreSQL client) is installed ----
+if ! command -v psql >/dev/null 2>&1; then
+  echo "[WARN] psql not found. Attempting to install..."
+  if [ -f /etc/debian_version ]; then
+    sudo apt-get update -y && sudo apt-get install -y postgresql-client
+  elif [ -f /etc/redhat-release ]; then
+    sudo yum install -y postgresql
+  elif command -v brew >/dev/null 2>&1; then
+    brew install postgresql
+  else
+    echo "[ERROR] Unable to install psql automatically. Please install PostgreSQL client manually."
+    echo "  Debian/Ubuntu: sudo apt install postgresql-client"
+    echo "  RHEL/CentOS:   sudo yum install postgresql"
+    echo "  macOS:         brew install postgresql"
+    exit 1
+  fi
+  echo "[INFO] psql successfully installed."
+else
+  echo "[INFO] psql already installed."
+fi
+
+# ---- Ensure Postgres analytics database exists ----
+if command -v psql >/dev/null 2>&1; then
+  echo "[INFO] Checking for 'analytics' database in Postgres..."
+  if ! PGPASSWORD="${PG_PASSWORD:-password}" psql -h "${PG_HOST:-localhost}" -p "${PG_PORT:-5432}" -U "${PG_USER:-postgres}" -tAc "SELECT 1 FROM pg_database WHERE datname='analytics';" | grep -q 1; then
+    echo "[INFO] Creating 'analytics' database..."
+    PGPASSWORD="${PG_PASSWORD:-password}" psql -h "${PG_HOST:-localhost}" -p "${PG_PORT:-5432}" -U "${PG_USER:-postgres}" -c "CREATE DATABASE analytics;"
+  else
+    echo "[INFO] Database 'analytics' already exists."
+  fi
+else
+  echo "[WARN] 'psql' not found; skipping Postgres database creation."
+fi
+
 # ---- 5. Main ----
 main() {
   log "Setup parameters:"

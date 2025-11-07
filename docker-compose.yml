@@ -2,25 +2,22 @@ services:
   glue:
     image: public.ecr.aws/glue/aws-glue-libs:5
     container_name: glue50
-    # Mount your AWS creds (read-only) and the workspace
     volumes:
       - ~/.aws:/home/hadoop/.aws:ro
       - ./:/ws
+      - ./jars:/opt/jars:ro
     working_dir: /ws
     environment:
       - AWS_PROFILE=${AWS_PROFILE:-default}
       - PYSPARK_PYTHON=python3.11
       - PYSPARK_DRIVER_PYTHON=python3.11
-      # Tweak Spark defaults per container if desired:
       - SPARK_LOCAL_IP=127.0.0.1
-    # Expose Spark UIs
     ports:
-      - "4040:4040"     # Spark UI (per active app)
-      - "18080:18080"   # History server (if you enable it)
+      - "4040:4040"
+      - "18080:18080"
     entrypoint: ["/bin/bash", "-lc"]
     command: "bash"
 
-  # Optional: a second service lets you run multiple jobs *without* port conflicts
   glue2:
     image: public.ecr.aws/glue/aws-glue-libs:5
     container_name: glue50b
@@ -57,20 +54,18 @@ services:
     image: icr.io/db2_community/db2:latest
     container_name: db2
     privileged: true
-    shm_size: "2g"                     # Db2 needs >1G shm on modern images
+    shm_size: "2g"
     environment:
       LICENSE: accept
-      DB2INSTANCE: db2inst1
       DB2INST1_PASSWORD: password
-      DBNAME: TESTDB                   # will auto-create on first start
+      DBNAME: TESTDB
       SAMPLEDB: "false"
-      # optional: reduce first-boot work
       UPDATEAVAIL: "NO"
       TO_CREATE_SAMPLEDB: "NO"
     ports:
       - "50000:50000"
     volumes:
-      - db2data:/database              # named volume (important)
+      - db2data:/database
     healthcheck:
       test: [ "CMD", "bash", "-lc",
               "su - db2inst1 -s /bin/bash -lc 'source ~/sqllib/db2profile >/dev/null 2>&1 || true; db2level >/dev/null 2>&1'" ]
@@ -78,5 +73,25 @@ services:
       timeout: 10s
       retries: 20
 
+  # --- PostgreSQL for local analytics or JDBC testing ---
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   db2data:
+  postgres_data:

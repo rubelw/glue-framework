@@ -1,24 +1,24 @@
 {
   "dev": {
-    "target_path": "file:///ws/out/customers/dev/",
     "repartition": 4,
-    "partition_col": "ingest_dt",
+
     "db2": {
-      "host": "localhost",
-      "port": 50000,
-      "database": "TESTDB",
-      "schema": "DB2INST1",
-      "table": "CUSTOMERS_DEV",
+      "url": "jdbc:db2://localhost:50000/TESTDB:currentSchema=DB2INST1;",
       "user": "db2inst1",
       "password": "password",
-      "driver_class": "com.ibm.db2.jcc.DB2Driver",
-      "jdbc_jar": "/opt/jars/db2jcc4.jar",
-      "partition": {
-        "column": "CUSTOMER_ID",
-        "lower_bound": 1,
-        "upper_bound": 100000,
-        "num_partitions": 4
-      }
+      "dbtable": "DB2INST1.CUSTOMERS_DEV",
+      "driver": "com.ibm.db2.jcc.DB2Driver",
+      "fetch_size": 1000
+    },
+
+    "postgres": {
+      "url": "jdbc:postgresql://localhost:5432/appdb",
+      "user": "appuser",
+      "password": "apppassword",
+      "schema": "public",
+      "table": "customers_clean",
+      "mode": "overwrite",
+      "batch_size": 5000
     }
   }
 }
