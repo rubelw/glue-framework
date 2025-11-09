@@ -235,7 +235,7 @@ create-pg-db:
 	@echo "[OK] Database '$(PG_DB)' is present."
 
 # ---------- Db2 (on shared network) ----------
-.PHONY: up-db2 down-db2 wait-db2-tcp wait-db2-setup wait-db2-sql seed-db2
+.PHONY: up-db2 down-db2 wait-db2-tcp wait-db2-setup wait-db2-sql seed-db2 seed-db2-debug
 
 
 up-db2: up-net
@@ -299,28 +299,27 @@ wait-db2-sql:
 	fi
 
 seed-db2:
-	@set -e
-	@echo "[INFO] Seeding Db2 TESTDB.DB2INST1.CUSTOMERS_DEV (idempotent)…"
-	@docker exec -u db2inst1 db2-int bash -lc 'set -e; source $$HOME/sqllib/db2profile; \
-	  db2 -v connect to TESTDB >/dev/null; \
-	  if db2 -x "select 1 from syscat.tables where tabschema='\''DB2INST1'\'' and tabname='\''CUSTOMERS_DEV'\''" | grep -q 1; then \
-	    echo "[OK] Table already exists."; \
-	  else \
-	    echo "[INFO] Creating and seeding table…"; \
-	    printf "%s\n" \
-"CREATE TABLE DB2INST1.CUSTOMERS_DEV (" \
-"  CUSTOMER_ID INT NOT NULL PRIMARY KEY," \
-"  EMAIL       VARCHAR(255)," \
-"  INGEST_DT   DATE" \
-");" \
-"INSERT INTO DB2INST1.CUSTOMERS_DEV (CUSTOMER_ID, EMAIL, INGEST_DT) VALUES (1, '\''alice@example.com'\'', CURRENT DATE);" \
-"INSERT INTO DB2INST1.CUSTOMERS_DEV (CUSTOMER_ID, EMAIL, INGEST_DT) VALUES (2, '\''bob@example.com'\'',   CURRENT DATE);" \
-	    | db2 -tvf /dev/stdin ; \
-	  fi; \
-	  db2 terminate >/dev/null'
+	@echo "[INFO] Running DB2 seed script..."
+	@DB2_CONT=db2-int \
+	 DB2_DB=TESTDB \
+	 DB2_USER=db2inst1 \
+	 DB2_SCHEMA=DB2INST1 \
+	 DATA_ROOT=tests/data \
+	 bash scripts/seed.sh
+	@echo "[OK] DB2 seeding complete."
+
+# Same, but with tracing to see exactly where it breaks
+seed-db2-debug:
+	@echo "[INFO] Running DB2 seed script (debug)…"
+	@DB2_CONT=db2-int \
+	 DB2_DB=TESTDB \
+	 DB2_USER=db2inst1 \
+	 DB2_SCHEMA=DB2INST1 \
+	 DATA_ROOT=tests/data \
+	 bash -x scripts/seed.sh
 
 # ---------- Run integration tests on the same network ----------
-test-integration: ensure_docker up-net up-pg up-db2 seed-db2
+test-integration: ensure_docker up-net up-pg up-db2 seed-db2-debug
 	@echo "[INFO] Running integration tests in Glue 5.0 container"
 	@docker run --rm -it \
 	  -v $$HOME/.aws:/home/hadoop/.aws:ro \
